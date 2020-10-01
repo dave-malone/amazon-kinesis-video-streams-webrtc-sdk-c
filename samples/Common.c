@@ -587,7 +587,7 @@ STATUS createSampleConfiguration(PCHAR channelName, SIGNALING_CHANNEL_ROLE_TYPE 
     CHK_ERR((pCaCertPath = getenv("IOT_CA_CERT_PATH")) != NULL, STATUS_INVALID_OPERATION, "IOT_CA_CERT_PATH must be set");
     CHK_ERR((pIoTRoleAlias = getenv("AWS_IOT_ROLE_ALIAS")) != NULL, STATUS_INVALID_OPERATION, "AWS_IOT_ROLE_ALIAS must be set");
 
-    pSessionToken = getenv(SESSION_TOKEN_ENV_VAR);
+/*    pSessionToken = getenv(SESSION_TOKEN_ENV_VAR); */
     pSampleConfiguration->enableFileLogging = FALSE;
     if (NULL != getenv(ENABLE_FILE_LOGGING)) {
         pSampleConfiguration->enableFileLogging = TRUE;
