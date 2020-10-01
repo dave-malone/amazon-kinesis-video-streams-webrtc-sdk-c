@@ -568,16 +568,25 @@ STATUS createSampleConfiguration(PCHAR channelName, SIGNALING_CHANNEL_ROLE_TYPE 
                                  PSampleConfiguration* ppSampleConfiguration)
 {
     STATUS retStatus = STATUS_SUCCESS;
-    PCHAR pAccessKey, pSecretKey, pSessionToken, pLogLevel;
+/*    PCHAR pAccessKey, pSecretKey, pSessionToken, pLogLevel; */
+    PCHAR pCredentialsProviderEndpoint, pCertPath, pPrivateKeyPath, pCaCertPath, pIoTRoleAlias, pLogLevel;
     PSampleConfiguration pSampleConfiguration = NULL;
     UINT32 logLevel = LOG_LEVEL_DEBUG;
 
     CHK(ppSampleConfiguration != NULL, STATUS_NULL_ARG);
 
     CHK(NULL != (pSampleConfiguration = (PSampleConfiguration) MEMCALLOC(1, SIZEOF(SampleConfiguration))), STATUS_NOT_ENOUGH_MEMORY);
-
+/*
     CHK_ERR((pAccessKey = getenv(ACCESS_KEY_ENV_VAR)) != NULL, STATUS_INVALID_OPERATION, "AWS_ACCESS_KEY_ID must be set");
     CHK_ERR((pSecretKey = getenv(SECRET_KEY_ENV_VAR)) != NULL, STATUS_INVALID_OPERATION, "AWS_SECRET_ACCESS_KEY must be set");
+*/
+
+    CHK_ERR((pCredentialsProviderEndpoint = getenv("AWS_IOT_CREDENTIALS_ENDPOINT")) != NULL, STATUS_INVALID_OPERATION, "AWS_IOT_CREDENTIALS_ENDPOINT must be set");
+    CHK_ERR((pCertPath = getenv("IOT_CERT_PATH")) != NULL, STATUS_INVALID_OPERATION, "IOT_CERT_PATH must be set");
+    CHK_ERR((pPrivateKeyPath = getenv("IOT_PRIVATE_KEY_PATH")) != NULL, STATUS_INVALID_OPERATION, "IOT_PRIVATE_KEY_PATH must be set");
+    CHK_ERR((pCaCertPath = getenv("IOT_CA_CERT_PATH")) != NULL, STATUS_INVALID_OPERATION, "IOT_CA_CERT_PATH must be set");
+    CHK_ERR((pIoTRoleAlias = getenv("AWS_IOT_ROLE_ALIAS")) != NULL, STATUS_INVALID_OPERATION, "AWS_IOT_ROLE_ALIAS must be set");
+
     pSessionToken = getenv(SESSION_TOKEN_ENV_VAR);
     pSampleConfiguration->enableFileLogging = FALSE;
     if (NULL != getenv(ENABLE_FILE_LOGGING)) {
@@ -597,8 +606,26 @@ STATUS createSampleConfiguration(PCHAR channelName, SIGNALING_CHANNEL_ROLE_TYPE 
 
     SET_LOGGER_LOG_LEVEL(logLevel);
 
+/*
     CHK_STATUS(
         createStaticCredentialProvider(pAccessKey, 0, pSecretKey, 0, pSessionToken, 0, MAX_UINT64, &pSampleConfiguration->pCredentialProvider));
+*/
+
+    printf("Credentials Provider Endpoint: %s\n", pCredentialsProviderEndpoint);
+    printf("Certificate Path: %s\n", pCertPath);
+    printf("Private Key Path: %s\n", pPrivateKeyPath);
+    printf("CA Certificate Path: %s\n", pCaCertPath);
+    printf("AWS IoT Role Alias: %s\n", pIoTRoleAlias);
+
+    CHK_STATUS(
+        createLwsIotCredentialProvider(
+            pCredentialsProviderEndpoint,  // IoT credentials endpoint
+            pCertPath,  // path to iot certificate
+            pPrivateKeyPath, // path to iot private key
+            pCaCertPath, // path to CA cert
+            pIoTRoleAlias, // IoT role alias
+            channelName, // iot thing name, recommended to be same as your channel name
+            &pSampleConfiguration->pCredentialProvider));
 
     pSampleConfiguration->audioSenderTid = INVALID_TID_VALUE;
     pSampleConfiguration->videoSenderTid = INVALID_TID_VALUE;
@@ -840,7 +867,9 @@ STATUS freeSampleConfiguration(PSampleConfiguration* ppSampleConfiguration)
         CVAR_FREE(pSampleConfiguration->cvar);
     }
 
-    freeStaticCredentialProvider(&pSampleConfiguration->pCredentialProvider);
+/*    freeStaticCredentialProvider(&pSampleConfiguration->pCredentialProvider); */
+
+    freeIotCredentialProvider(&pSampleConfiguration->pCredentialProvider);
 
     if (pSampleConfiguration->iceCandidatePairStatsTimerId != MAX_UINT32) {
         CHK_STATUS(timerQueueCancelTimer(pSampleConfiguration->timerQueueHandle, pSampleConfiguration->iceCandidatePairStatsTimerId,
@@ -968,7 +997,6 @@ STATUS signalingMessageReceived(UINT64 customData, PReceivedSignalingMessage pRe
     BOOL peerConnectionFound = FALSE;
     BOOL locked = TRUE;
     UINT32 clientIdHash;
-    UINT64 hashValue = 0;
     PStackQueue pPendingMessageQueue = NULL;
     PSampleStreamingSession pSampleStreamingSession = NULL;
     PReceivedSignalingMessage pReceivedSignalingMessageCopy = NULL;
@@ -982,8 +1010,7 @@ STATUS signalingMessageReceived(UINT64 customData, PReceivedSignalingMessage pRe
                                  (UINT32) STRLEN(pReceivedSignalingMessage->signalingMessage.peerClientId));
     CHK_STATUS(hashTableContains(pSampleConfiguration->pRtcPeerConnectionForRemoteClient, clientIdHash, &peerConnectionFound));
     if (peerConnectionFound) {
-        CHK_STATUS(hashTableGet(pSampleConfiguration->pRtcPeerConnectionForRemoteClient, clientIdHash, &hashValue));
-        pSampleStreamingSession = (PSampleStreamingSession) hashValue;
+        CHK_STATUS(hashTableGet(pSampleConfiguration->pRtcPeerConnectionForRemoteClient, clientIdHash, (PUINT64) &pSampleStreamingSession));
     }
 
     switch (pReceivedSignalingMessage->signalingMessage.messageType) {
@@ -1009,9 +1036,8 @@ STATUS signalingMessageReceived(UINT64 customData, PReceivedSignalingMessage pRe
             CHK_STATUS(hashTablePut(pSampleConfiguration->pRtcPeerConnectionForRemoteClient, clientIdHash, (UINT64) pSampleStreamingSession));
 
             // If there are any ice candidate messages in the queue for this client id, submit them now.
-            if (STATUS_SUCCEEDED(hashTableGet(pSampleConfiguration->pPendingSignalingMessageForRemoteClient, clientIdHash, &hashValue))) {
-                pPendingMessageQueue = (PStackQueue) hashValue;
-
+            if (STATUS_SUCCEEDED(
+                    hashTableGet(pSampleConfiguration->pPendingSignalingMessageForRemoteClient, clientIdHash, (PUINT64) &pPendingMessageQueue))) {
                 CHK_STATUS(submitPendingIceCandidate(pPendingMessageQueue, pSampleStreamingSession));
                 CHK_STATUS(hashTableRemove(pSampleConfiguration->pPendingSignalingMessageForRemoteClient, clientIdHash));
             }
@@ -1028,10 +1054,9 @@ STATUS signalingMessageReceived(UINT64 customData, PReceivedSignalingMessage pRe
             CHK_STATUS(handleAnswer(pSampleConfiguration, pSampleStreamingSession, &pReceivedSignalingMessage->signalingMessage));
             CHK_STATUS(hashTablePut(pSampleConfiguration->pRtcPeerConnectionForRemoteClient, clientIdHash, (UINT64) pSampleStreamingSession));
 
-            hashValue = 0;
             // If there are any ice candidate messages in the queue for this client id, submit them now.
-            if (STATUS_SUCCEEDED(hashTableGet(pSampleConfiguration->pPendingSignalingMessageForRemoteClient, clientIdHash, &hashValue))) {
-                pPendingMessageQueue = (PStackQueue) hashValue;
+            if (STATUS_SUCCEEDED(
+                    hashTableGet(pSampleConfiguration->pPendingSignalingMessageForRemoteClient, clientIdHash, (PUINT64) &pPendingMessageQueue))) {
                 CHK_STATUS(submitPendingIceCandidate(pPendingMessageQueue, pSampleStreamingSession));
                 CHK_STATUS(hashTableRemove(pSampleConfiguration->pPendingSignalingMessageForRemoteClient, clientIdHash));
             }
@@ -1043,10 +1068,8 @@ STATUS signalingMessageReceived(UINT64 customData, PReceivedSignalingMessage pRe
              * submit the signaling message into the corresponding streaming session.
              */
             if (!peerConnectionFound) {
-                hashValue = 0;
                 if (STATUS_HASH_KEY_NOT_PRESENT ==
-                    hashTableGet(pSampleConfiguration->pPendingSignalingMessageForRemoteClient, clientIdHash, &hashValue)) {
-                    pPendingMessageQueue = (PStackQueue) hashValue;
+                    hashTableGet(pSampleConfiguration->pPendingSignalingMessageForRemoteClient, clientIdHash, (PUINT64) &pPendingMessageQueue)) {
                     CHK_STATUS(stackQueueCreate(&pPendingMessageQueue));
                     CHK_STATUS(
                         hashTablePut(pSampleConfiguration->pPendingSignalingMessageForRemoteClient, clientIdHash, (UINT64) pPendingMessageQueue));
